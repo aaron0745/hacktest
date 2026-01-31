@@ -1,4 +1,5 @@
 const express = require('express');
+require('dotenv').config();
 const http = require('http');
 const socketIo = require('socket.io');
 const multer = require('multer');
@@ -151,7 +152,8 @@ app.post('/start-session', async (req, res) => {
         // Start Docker container for the session
         await createAndStartContainer(sessionId);
 
-        const qrCodeData = `http://${req.hostname}:3001/upload?sessionId=${sessionId}`; // Assuming frontend runs on 3000
+        // Point QR code to the Frontend URL
+        const qrCodeData = `http://${process.env.DEVICE_IP}:5173/upload?sessionId=${sessionId}`; 
         const qrCodeImage = await qrcode.toDataURL(qrCodeData);
 
         io.emit('session-started', { sessionId, qrCodeImage, uploadUrl: qrCodeData });
@@ -337,6 +339,6 @@ io.on('connection', (socket) => {
 // Start the server
 server.listen(port, () => {
     console.log(`Server listening on port ${port}`);
-    console.log(`For QR display, navigate to http://[YOUR_LAPTOP_IP]:${port}/qr-display (placeholder, implement frontend route)`);
-    console.log(`For customer upload, navigate to http://[YOUR_LAPTOP_IP]:${port}/upload?sessionId=<active_session_id>`);
+    console.log(`For QR display, navigate to http://${process.env.DEVICE_IP}:${port}/qr-display (placeholder, implement frontend route)`);
+    console.log(`For customer upload, navigate to http://${process.env.DEVICE_IP}:${port}/upload?sessionId=<active_session_id>`);
 });

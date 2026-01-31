@@ -1,9 +1,12 @@
 import { useState } from 'react';
-import { motion } from 'framer-motion';
+import { useSearchParams } from 'react-router-dom';
+import { motion, AnimatePresence } from 'framer-motion';
 import { UploadCloud, CheckCircle, Loader2 } from 'lucide-react';
 import { API_URL } from '../socket';
 
 export default function UserUpload() {
+  const [searchParams] = useSearchParams();
+  const sessionId = searchParams.get('sessionId');
   const [status, setStatus] = useState('idle'); // idle | uploading | success
   const [ticket, setTicket] = useState(null);
 
@@ -11,26 +14,33 @@ export default function UserUpload() {
     const file = e.target.files[0];
     if (!file) return;
 
+    if (!sessionId) {
+        alert("Invalid session. Please scan the QR code again.");
+        return;
+    }
+
     setStatus('uploading');
     
     const formData = new FormData();
     formData.append('file', file);
 
     try {
-        const response = await fetch(`${API_URL}/upload`, {
+        const response = await fetch(`${API_URL}/upload?sessionId=${sessionId}`, {
             method: 'POST',
             body: formData,
         });
         const data = await response.json();
         
-        if (data.success) {
-            setTicket(data.ticket);
+        if (response.ok) {
+            setTicket(data.ticketNumber);
             setStatus('success');
+        } else {
+            throw new Error(data.message || 'Upload failed');
         }
     } catch (err) {
         console.error(err);
         setStatus('idle');
-        alert("Upload failed. Check connection.");
+        alert(err.message || "Upload failed. Check connection.");
     }
   };
 

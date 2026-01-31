@@ -1,18 +1,37 @@
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { Printer, ArrowRight, Zap } from 'lucide-react';
-import { socket } from '../socket';
+import { Printer, ArrowRight, Zap, Loader2 } from 'lucide-react';
+import { API_URL } from '../socket';
 
 export default function Home() {
   const navigate = useNavigate();
+  const [isLoading, setIsLoading] = useState(false);
 
-  const startSession = () => {
-    // Navigate to dashboard
-    navigate('/dashboard');
+  const startSession = async () => {
+    setIsLoading(true);
+    try {
+        const response = await fetch(`${API_URL}/start-session`, {
+            method: 'POST',
+        });
+        
+        if (response.ok || response.status === 400) {
+            // 400 likely means session already active, which is fine to proceed
+            navigate('/dashboard');
+        } else {
+            console.error("Failed to start session");
+            alert("Could not start session. Check console.");
+        }
+    } catch (error) {
+        console.error(error);
+        alert("Connection error.");
+    } finally {
+        setIsLoading(false);
+    }
   };
 
   return (
-    <div className="flex flex-col items-center justify-center h-screen relative overflow-hidden">
+    <div className="flex flex-col items-center justify-center h-screen relative overflow-hidden bg-background">
       {/* Ambient Background Glow */}
       <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[500px] h-[500px] bg-primary/20 rounded-full blur-[120px] pointer-events-none" />
 
@@ -40,10 +59,11 @@ export default function Home() {
             whileHover={{ scale: 1.05 }}
             whileTap={{ scale: 0.95 }}
             onClick={startSession}
-            className="group relative inline-flex items-center gap-3 px-10 py-4 bg-white text-black font-bold rounded-full text-lg shadow-[0_0_40px_-10px_rgba(255,255,255,0.3)] hover:shadow-[0_0_60px_-15px_rgba(255,255,255,0.5)] transition-all"
+            disabled={isLoading}
+            className="group relative inline-flex items-center gap-3 px-10 py-4 bg-white text-black font-bold rounded-full text-lg shadow-[0_0_40px_-10px_rgba(255,255,255,0.3)] hover:shadow-[0_0_60px_-15px_rgba(255,255,255,0.5)] transition-all disabled:opacity-70 disabled:cursor-not-allowed"
             >
-            Start Session
-            <ArrowRight className="w-5 h-5 group-hover:translate-x-1 transition-transform" />
+            {isLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : 'Start Session'}
+            {!isLoading && <ArrowRight className="w-5 h-5 group-hover:translate-x-1 transition-transform" />}
             </motion.button>
         </div>
       </motion.div>
