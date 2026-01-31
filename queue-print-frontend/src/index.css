@@ -1,0 +1,28 @@
+@import "tailwindcss";
+
+@theme {
+  /* Dark "Vercel-like" Theme Palette */
+  --color-background: #09090b; /* Zinc 950 */
+  --color-surface: #18181b; /* Zinc 900 */
+  --color-border: #27272a; /* Zinc 800 */
+
+  --color-primary: #e11d48; /* Rose 600 */
+  --color-primary-hover: #be123c; /* Rose 700 */
+
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+}
+
+/* Global Reset */
+body {
+  background-color: var(--color-background);
+  color: #fafafa;
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+ 
+/* Custom Utilities for Glassmorphism */
+@utility glass {
+  background-color: rgba(24, 24, 27, 0.6);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}

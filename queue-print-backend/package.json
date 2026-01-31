@@ -1,0 +1,22 @@
+{
+  "name": "queue-print-backend",
+  "version": "1.0.0",
+  "description": "Backend for the Safe-Print application.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "cors": "^2.8.6",
+    "dockerode": "^4.0.9",
+    "express": "^4.22.1",
+    "multer": "^2.0.2",
+    "qrcode": "^1.5.4",
+    "socket.io": "^4.8.3",
+    "tar-fs": "^2.1.4"
+  },
+  "type": "commonjs"
+}
