@@ -74,6 +74,7 @@ const createAndStartContainer = async (sessionId) => {
             RUN usermod -a -G lpadmin root
             ENV CUPS_SERVER=localhost
             ENV CUPS_DEBUG=1
+            WORKDIR /app
             EXPOSE 631
             CMD ["/usr/sbin/cupsd", "-f"]
         `;
@@ -198,14 +199,16 @@ app.post('/upload', upload.single('file'), (req, res) => {
 
     // Set a TTL for the file
     setTimeout(() => {
-        const index = sessionFiles[sessionId].findIndex(f => f.id === newFile.id);
-        if (index > -1) {
-            console.log(`File ${newFile.originalname} (Ticket ${newFile.ticketNumber}) auto-deleted due to TTL.`);
-            fs.unlink(newFile.path, (err) => {
-                if (err) console.error('Error deleting file after TTL:', err);
-            });
-            sessionFiles[sessionId].splice(index, 1);
-            io.emit('file-deleted', { sessionId, fileId: newFile.id });
+        if (sessionFiles[sessionId]) {
+            const index = sessionFiles[sessionId].findIndex(f => f.id === newFile.id);
+            if (index > -1) {
+                console.log(`File ${newFile.originalname} (Ticket ${newFile.ticketNumber}) auto-deleted due to TTL.`);
+                fs.unlink(newFile.path, (err) => {
+                    if (err) console.error('Error deleting file after TTL:', err);
+                });
+                sessionFiles[sessionId].splice(index, 1);
+                io.emit('file-deleted', { sessionId, fileId: newFile.id });
+            }
         }
     }, 2 * 60 * 1000); // 2 minutes TTL
 
@@ -337,8 +340,8 @@ io.on('connection', (socket) => {
 });
 
 // Start the server
-server.listen(port, () => {
-    console.log(`Server listening on port ${port}`);
+server.listen(port, '0.0.0.0', () => {
+    console.log(`Server listening on port ${port} (0.0.0.0)`);
     console.log(`For QR display, navigate to http://${process.env.DEVICE_IP}:${port}/qr-display (placeholder, implement frontend route)`);
     console.log(`For customer upload, navigate to http://${process.env.DEVICE_IP}:${port}/upload?sessionId=<active_session_id>`);
 });
