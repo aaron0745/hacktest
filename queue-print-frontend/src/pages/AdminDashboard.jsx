@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { FileText, X, Printer, Smartphone, LogOut, Clock, Loader2 } from 'lucide-react';
 import { socket, API_URL } from '../socket';
@@ -10,6 +10,7 @@ export default function AdminDashboard() {
   const [selectedFile, setSelectedFile] = useState(null);
   const [isPrinting, setIsPrinting] = useState(false);
   const navigate = useNavigate();
+  const printFrameRef = useRef(null);
 
   useEffect(() => {
     // Initial check for active session
@@ -70,27 +71,72 @@ export default function AdminDashboard() {
 
   const handlePrint = async () => {
       if (!selectedFile || !sessionId) return;
-      
       setIsPrinting(true);
+      
+      const fileUrl = getFileUrl(selectedFile);
+
       try {
-          const response = await fetch(`${API_URL}/print/${selectedFile.id}`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ sessionId })
-          });
+          const response = await fetch(fileUrl);
+          const blob = await response.blob();
+          const blobUrl = URL.createObjectURL(blob);
+          const type = selectedFile.mimetype || blob.type;
+
+          // Create invisible iframe
+          const iframe = document.createElement('iframe');
+          iframe.style.position = 'fixed';
+          iframe.style.right = '0';
+          iframe.style.bottom = '0';
+          iframe.style.width = '0';
+          iframe.style.height = '0';
+          iframe.style.border = '0';
+          iframe.style.visibility = 'hidden'; // Hide it but keep it in DOM
           
-          if (response.ok) {
-              // File will be deleted by backend and 'file-deleted' event will close modal
-              alert("Sent to printer successfully!");
+          document.body.appendChild(iframe);
+
+          if (type.includes('pdf')) {
+              iframe.src = blobUrl;
+              iframe.onload = () => {
+                  setIsPrinting(false);
+                  setTimeout(() => {
+                      iframe.contentWindow.focus();
+                      iframe.contentWindow.print();
+                  }, 500);
+              };
+          } else if (type.includes('image')) {
+               const doc = iframe.contentWindow.document;
+               doc.open();
+               doc.write(`
+                  <html>
+                    <head><style>body{margin:0;display:flex;justify-content:center;align-items:center;height:100vh;} img{max-width:100%;max-height:100%;object-fit:contain;}</style></head>
+                    <body>
+                        <img src="${blobUrl}" onload="setTimeout(() => { window.print(); }, 500);" />
+                    </body>
+                  </html>
+               `);
+               doc.close();
+               setIsPrinting(false);
           } else {
-              const err = await response.json();
-              alert(`Print failed: ${err.message}`);
+               // Fallback / Text
+               const text = await blob.text();
+                const doc = iframe.contentWindow.document;
+               doc.open();
+               doc.write(`<html><body><pre>${text}</pre><script>window.onload = function() { window.print(); }</script></body></html>`);
+               doc.close();
+               setIsPrinting(false);
           }
-      } catch (error) {
-          console.error(error);
-          alert("Network error while trying to print.");
-      } finally {
+          
+          // Cleanup iframe after a delay
+          setTimeout(() => {
+              if (document.body.contains(iframe)) {
+                document.body.removeChild(iframe);
+              }
+              URL.revokeObjectURL(blobUrl);
+          }, 60000); 
+
+      } catch (err) {
+          console.error("Print error:", err);
           setIsPrinting(false);
+          alert("Failed to prepare print document.");
       }
   };
 
@@ -245,7 +291,7 @@ export default function AdminDashboard() {
                         {isPrinting ? (
                             <>
                                 <Loader2 className="w-5 h-5 animate-spin" />
-                                Sending to Printer...
+                                Preparing...
                             </>
                         ) : (
                             <>
