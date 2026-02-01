@@ -1,6 +1,7 @@
 const express = require('express');
 require('dotenv').config();
 const http = require('http');
+const { exec } = require('child_process');
 const socketIo = require('socket.io');
 const multer = require('multer');
 const qrcode = require('qrcode');
@@ -9,13 +10,14 @@ const Docker = require('dockerode');
 const tar = require('tar-fs');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const { v4: uuidv4 } = require('uuid');
 
 const app = express();
 const server = http.createServer(app);
 const io = socketIo(server, {
     cors: {
-        origin: "*", // Allow all origins for simplicity in this example
+        origin: "*", 
         methods: ["GET", "POST"]
     }
 });
@@ -29,13 +31,30 @@ app.use(cors());
 app.use(express.json());
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
-// Global variables for session management
+// Global variables
 let activeSessionId = null;
-let sessionFiles = {}; // { sessionId: [{ id, filename, originalname, size, timestamp, path, ticketNumber }] }
-let container = null; // Docker container for the current session
-let fileUploadDir = null; // Dynamic upload directory for the current session
+let sessionFiles = {}; 
+let container = null; 
+let fileUploadDir = null; 
 
-// Multer storage configuration
+// IP Detection
+const getLocalExternalIp = () => {
+    const interfaces = os.networkInterfaces();
+    for (const name of Object.keys(interfaces)) {
+        for (const iface of interfaces[name]) {
+            // Skip internal (localhost) and non-IPv4 addresses
+            if (iface.family === 'IPv4' && !iface.internal) {
+                return iface.address;
+            }
+        }
+    }
+    return 'localhost'; 
+};
+
+const SERVER_IP = getLocalExternalIp();
+console.log(`Detected Server IP: ${SERVER_IP}`);
+
+// Multer storage
 const storage = multer.diskStorage({
     destination: (req, file, cb) => {
         if (!fileUploadDir) {
@@ -51,7 +70,6 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage: storage });
 
-// Helper to remove files and directory after session ends
 const cleanupSessionFiles = async (sessionId, directory) => {
     if (directory && fs.existsSync(directory)) {
         console.log(`Cleaning up session directory: ${directory}`);
@@ -64,10 +82,21 @@ const cleanupSessionFiles = async (sessionId, directory) => {
     console.log(`Session ${sessionId} files cleaned up.`);
 };
 
-// Docker functions
-const createAndStartContainer = async (sessionId) => {
+// Docker Optimization
+const BASE_IMAGE_NAME = 'queue-print-base';
+
+const ensureBaseImage = async () => {
     try {
-        // Create a temporary Dockerfile for this session
+        const images = await docker.listImages();
+        const exists = images.some(img => img.RepoTags && img.RepoTags.includes(`${BASE_IMAGE_NAME}:latest`));
+
+        if (exists) {
+            console.log(`Base image '${BASE_IMAGE_NAME}' already exists. Skipping build.`);
+            return;
+        }
+
+        console.log(`Base image '${BASE_IMAGE_NAME}' not found. Building... (This may take a minute)`);
+        
         const dockerfileContent = `
             FROM ubuntu:latest
             RUN apt-get update && apt-get install -y cups cups-client cups-bsd
@@ -78,48 +107,58 @@ const createAndStartContainer = async (sessionId) => {
             EXPOSE 631
             CMD ["/usr/sbin/cupsd", "-f"]
         `;
-        const tempDirPath = path.join(__dirname, `docker_session_${sessionId}`);
-        fs.mkdirSync(tempDirPath, { recursive: true });
+        
+        const tempDirPath = path.join(__dirname, 'docker_base_build');
+        if (!fs.existsSync(tempDirPath)) fs.mkdirSync(tempDirPath);
         fs.writeFileSync(path.join(tempDirPath, 'Dockerfile'), dockerfileContent);
 
-        // Build the Docker image
         const buildStream = await docker.buildImage(
             tar.pack(tempDirPath),
-            { t: `safe-print-session-${sessionId}` }
+            { t: BASE_IMAGE_NAME }
         );
 
         await new Promise((resolve, reject) => {
             docker.modem.followProgress(buildStream, (err, res) => err ? reject(err) : resolve(res));
         });
-        console.log(`Docker image safe-print-session-${sessionId} built.`);
 
+        // Cleanup temp dir
+        fs.unlinkSync(path.join(tempDirPath, 'Dockerfile'));
+        fs.rmdirSync(tempDirPath);
+
+        console.log(`Base image '${BASE_IMAGE_NAME}' built successfully.`);
+
+    } catch (error) {
+        console.error('Error ensuring base image:', error);
+        throw error;
+    }
+};
+
+const createAndStartContainer = async (sessionId) => {
+    try {
+        await ensureBaseImage();
+
+        const containerName = `session-${sessionId}`;
+        
         container = await docker.createContainer({
-            Image: `safe-print-session-${sessionId}`,
+            Image: BASE_IMAGE_NAME,
             AttachStdin: false,
             AttachStdout: true,
             AttachStderr: true,
             Tty: true,
-            OpenStdin: false,
-            StdinOnce: false,
             HostConfig: {
                 AutoRemove: true,
                 PublishAllPorts: true
             },
-            name: `safe-print-session-${sessionId}`
+            name: containerName
         });
 
         await container.start();
         const containerInfo = await container.inspect();
-        console.log(`Container ${container.id} started.`);
-        console.log('Container info:', containerInfo.NetworkSettings.Ports);
-
-        // Remove the temporary Dockerfile directory
-        fs.unlinkSync(path.join(tempDirPath, 'Dockerfile'));
-        fs.rmdirSync(tempDirPath);
-
+        console.log(`Container ${containerName} started.`);
+        
         return container;
     } catch (error) {
-        console.error('Error creating or starting Docker container:', error);
+        console.error('Error creating/starting container:', error);
         throw error;
     }
 };
@@ -128,61 +167,59 @@ const stopAndRemoveContainer = async (containerInstance) => {
     if (containerInstance) {
         try {
             await containerInstance.stop();
-            await containerInstance.remove();
-            console.log(`Container ${containerInstance.id} stopped and removed.`);
+            // AutoRemove is on, but explicitly removing just in case
+            // await containerInstance.remove(); 
+            console.log(`Container ${containerInstance.id} stopped.`);
         } catch (error) {
-            console.error('Error stopping or removing Docker container:', error);
+            // Ignore if already gone
+            console.error('Error stopping container:', error.message);
         }
     }
 };
 
 // API Endpoints
 
-// Start a new print session
 app.post('/start-session', async (req, res) => {
     if (activeSessionId) {
-        return res.status(400).json({ message: 'A session is already active. Please end the current session first.' });
+        return res.status(400).json({ message: 'Session active.' });
     }
 
     const sessionId = uuidv4();
     activeSessionId = sessionId;
     sessionFiles[sessionId] = [];
-    fileUploadDir = `uploads/session_${sessionId}`; // Set dynamic upload directory
+    fileUploadDir = `uploads/session_${sessionId}`; 
 
     try {
-        // Start Docker container for the session
         await createAndStartContainer(sessionId);
 
-        // Point QR code to the Frontend URL
-        const qrCodeData = `http://${process.env.DEVICE_IP}:5173/upload?sessionId=${sessionId}`; 
+        // Use dynamically detected IP for QR Code
+        const qrCodeData = `http://${SERVER_IP}:5173/upload?sessionId=${sessionId}`; 
         const qrCodeImage = await qrcode.toDataURL(qrCodeData);
 
         io.emit('session-started', { sessionId, qrCodeImage, uploadUrl: qrCodeData });
-        console.log(`Session ${sessionId} started. QR Code generated for: ${qrCodeData}`);
+        console.log(`Session ${sessionId} started. Upload URL: ${qrCodeData}`);
         res.status(200).json({ sessionId, qrCodeImage, uploadUrl: qrCodeData });
     } catch (error) {
         console.error('Failed to start session:', error);
         activeSessionId = null;
         fileUploadDir = null;
-        stopAndRemoveContainer(container); // Clean up container if creation failed
+        if (container) stopAndRemoveContainer(container);
         container = null;
         res.status(500).json({ message: 'Failed to start session', error: error.message });
     }
 });
 
-// Upload endpoint for customers
 app.post('/upload', upload.single('file'), (req, res) => {
     const { sessionId } = req.query;
 
     if (!sessionId || sessionId !== activeSessionId) {
-        return res.status(400).json({ message: 'Invalid or inactive session ID.' });
+        return res.status(400).json({ message: 'Invalid session.' });
     }
-
     if (!req.file) {
-        return res.status(400).json({ message: 'No file uploaded.' });
+        return res.status(400).json({ message: 'No file.' });
     }
 
-    const ticketNumber = sessionFiles[sessionId].length + 1; // Simple incrementing ticket number
+    const ticketNumber = sessionFiles[sessionId].length + 1; 
     const newFile = {
         id: uuidv4(),
         filename: req.file.filename,
@@ -195,111 +232,88 @@ app.post('/upload', upload.single('file'), (req, res) => {
     };
 
     sessionFiles[sessionId].push(newFile);
-    io.emit('file-uploaded', { sessionId, file: newFile }); // Notify dashboard
+    io.emit('file-uploaded', { sessionId, file: newFile }); 
 
-    // Set a TTL for the file
     setTimeout(() => {
         if (sessionFiles[sessionId]) {
             const index = sessionFiles[sessionId].findIndex(f => f.id === newFile.id);
             if (index > -1) {
-                console.log(`File ${newFile.originalname} (Ticket ${newFile.ticketNumber}) auto-deleted due to TTL.`);
-                fs.unlink(newFile.path, (err) => {
-                    if (err) console.error('Error deleting file after TTL:', err);
-                });
+                console.log(`TTL: Deleting ${newFile.originalname}`);
+                fs.unlink(newFile.path, (e) => { if(e) console.error(e); });
                 sessionFiles[sessionId].splice(index, 1);
                 io.emit('file-deleted', { sessionId, fileId: newFile.id });
             }
         }
-    }, 2 * 60 * 1000); // 2 minutes TTL
+    }, 2 * 60 * 1000); 
 
     res.status(200).json({
-        message: 'File uploaded successfully!',
+        message: 'Uploaded!',
         ticketNumber: newFile.ticketNumber
     });
 });
 
-// Endpoint to get session files (for dashboard)
 app.get('/session-files', (req, res) => {
     const { sessionId } = req.query;
-    if (!sessionId || sessionId !== activeSessionId) {
-        return res.status(400).json({ message: 'Invalid or inactive session ID.' });
-    }
+    if (!sessionId || sessionId !== activeSessionId) return res.status(400).json({ message: 'Invalid session.' });
     res.status(200).json(sessionFiles[sessionId] || []);
 });
 
-// Print a specific file
-app.post('/print/:fileId', async (req, res) => {
-    const { fileId } = req.params;
-    const { sessionId } = req.body;
+app.get('/printers', (req, res) => {
+    exec('lpstat -a', (error, stdout, stderr) => {
+        const printers = [];
+        if (stdout) {
+            const lines = stdout.split('\n').filter(line => line.trim() !== '');
+            lines.forEach(line => {
+                const parts = line.split(' ');
+                if (parts[0] && parts[0] !== 'lpstat:') {
+                    printers.push({ name: parts[0], status: 'Ready' });
+                }
+            });
+        }
+        printers.push({ name: 'Secure_Virtual_Printer', status: 'Ready (Simulation)' });
+        res.status(200).json(printers);
+    });
+});
 
-    if (!sessionId || sessionId !== activeSessionId) {
-        return res.status(400).json({ message: 'Invalid or inactive session ID.' });
+app.post('/print-job', async (req, res) => {
+    const { fileId, printerName, sessionId } = req.body;
+    if (!sessionId || sessionId !== activeSessionId) return res.status(400).json({ message: 'Invalid session.' });
+
+    const fileToPrint = sessionFiles[sessionId]?.find(f => f.id === fileId);
+    if (!fileToPrint) return res.status(404).json({ message: 'File not found.' });
+
+    if (printerName === 'Secure_Virtual_Printer') {
+        console.log(`[MOCK] Printing ${fileToPrint.originalname}`);
+        setTimeout(() => {
+            const index = sessionFiles[sessionId].findIndex(f => f.id === fileToPrint.id);
+            if (index > -1) {
+                sessionFiles[sessionId].splice(index, 1);
+                fs.unlink(fileToPrint.path, (e) => { if(e) console.error(e); });
+                io.emit('file-deleted', { sessionId, fileId: fileToPrint.id }); 
+            }
+        }, 2000);
+        return res.status(200).json({ message: 'Sent to Secure Virtual Printer' });
     }
 
-    const fileToPrint = sessionFiles[sessionId].find(f => f.id === fileId);
-
-    if (!fileToPrint) {
-        return res.status(404).json({ message: 'File not found or already printed/deleted.' });
-    }
-
-    if (!container) {
-        return res.status(500).json({ message: 'No active print container.' });
-    }
-
-    try {
-        const containerPath = `/app/${fileToPrint.filename}`; // Path inside the container
-
-        // Copy file to container
-        const fileContent = fs.readFileSync(fileToPrint.path);
-        await container.putArchive(tar.pack(path.dirname(fileToPrint.path), {
-            entries: [path.basename(fileToPrint.path)]
-        }), {
-            path: '/app'
-        });
-
-        // Use `lp` command inside the container to print
-        const exec = await container.exec({
-            Cmd: ['lp', containerPath],
-            AttachStdout: true,
-            AttachStderr: true
-        });
-
-        const stream = await exec.start({});
-
-        let stdout = '';
-        let stderr = '';
-
-        stream.on('data', chunk => stdout += chunk.toString());
-        stream.on('end', () => {
-            console.log(`Print command stdout for ${fileToPrint.originalname}:`, stdout);
-            console.log(`Print command stderr for ${fileToPrint.originalname}:`, stderr);
-        });
-
-        await new Promise(resolve => stream.on('end', resolve));
-
-        // Assuming print command is successful, remove file from queue and local storage
+    const command = `lp -d ${printerName} "${fileToPrint.path}"`;
+    exec(command, (error, stdout, stderr) => {
+        if (error) {
+            console.error(`Print error: ${error}`);
+            return res.status(500).json({ message: 'Print failed', error: error.message });
+        }
+        
         const index = sessionFiles[sessionId].findIndex(f => f.id === fileToPrint.id);
         if (index > -1) {
             sessionFiles[sessionId].splice(index, 1);
-            fs.unlink(fileToPrint.path, (err) => {
-                if (err) console.error('Error deleting file after printing:', err);
-            });
-            io.emit('file-deleted', { sessionId, fileId: fileToPrint.id }); // Notify dashboard
+            fs.unlink(fileToPrint.path, (e) => { if(e) console.error(e); });
+            io.emit('file-deleted', { sessionId, fileId: fileToPrint.id });
         }
-
-        res.status(200).json({ message: `File ${fileToPrint.originalname} sent to printer.` });
-    } catch (error) {
-        console.error('Error printing file:', error);
-        res.status(500).json({ message: 'Failed to print file', error: error.message });
-    }
+        res.status(200).json({ message: `Sent to printer ${printerName}` });
+    });
 });
 
-
-// End the current print session
 app.post('/end-session', async (req, res) => {
-    if (!activeSessionId) {
-        return res.status(400).json({ message: 'No active session to end.' });
-    }
+    if (!activeSessionId) return res.status(400).json({ message: 'No session.' });
 
     const sessionIdToEnd = activeSessionId;
     const directoryToClean = fileUploadDir;
@@ -309,27 +323,19 @@ app.post('/end-session', async (req, res) => {
 
     try {
         await stopAndRemoveContainer(container);
-        container = null; // Clear container reference
-
+        container = null;
         await cleanupSessionFiles(sessionIdToEnd, directoryToClean);
         io.emit('session-ended', { sessionId: sessionIdToEnd });
-        console.log(`Session ${sessionIdToEnd} ended and resources cleaned up.`);
-        res.status(200).json({ message: `Session ${sessionIdToEnd} ended.` });
+        console.log(`Session ${sessionIdToEnd} ended.`);
+        res.status(200).json({ message: `Session ended.` });
     } catch (error) {
-        console.error('Failed to end session:', error);
-        res.status(500).json({ message: 'Failed to end session', error: error.message });
+        console.error('End session error:', error);
+        res.status(500).json({ message: 'Error ending session' });
     }
 });
 
-// Socket.IO connection handling
 io.on('connection', (socket) => {
-    console.log('A user connected:', socket.id);
-
-    socket.on('disconnect', () => {
-        console.log('User disconnected:', socket.id);
-    });
-
-    // Optionally send current session info to new connections
+    console.log('User connected:', socket.id);
     if (activeSessionId) {
         socket.emit('current-session-status', {
             active: true,
@@ -339,9 +345,6 @@ io.on('connection', (socket) => {
     }
 });
 
-// Start the server
 server.listen(port, '0.0.0.0', () => {
-    console.log(`Server listening on port ${port} (0.0.0.0)`);
-    console.log(`For QR display, navigate to http://${process.env.DEVICE_IP}:${port}/qr-display (placeholder, implement frontend route)`);
-    console.log(`For customer upload, navigate to http://${process.env.DEVICE_IP}:${port}/upload?sessionId=<active_session_id>`);
+    console.log(`Server running at http://${SERVER_IP}:${port}`);
 });

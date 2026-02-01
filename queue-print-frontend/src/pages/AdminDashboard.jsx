@@ -8,10 +8,12 @@ export default function AdminDashboard() {
   const [files, setFiles] = useState([]);
   const [sessionId, setSessionId] = useState(null);
   const [selectedFile, setSelectedFile] = useState(null);
+  const [printers, setPrinters] = useState([]);
+  const [showPrinterModal, setShowPrinterModal] = useState(false);
   const [isPrinting, setIsPrinting] = useState(false);
   const navigate = useNavigate();
-  const printFrameRef = useRef(null);
 
+  // ... (keep useEffects same as before) ...
   useEffect(() => {
     // Initial check for active session
     socket.on('current-session-status', (data) => {
@@ -35,7 +37,6 @@ export default function AdminDashboard() {
 
     // File events
     socket.on('file-uploaded', (data) => {
-        // Only add if it belongs to current session (though socket usually implies this)
         if (data.sessionId === sessionId || !sessionId) { 
              setFiles((prev) => [...prev, data.file]);
         }
@@ -45,6 +46,7 @@ export default function AdminDashboard() {
         setFiles((prev) => prev.filter(f => f.id !== data.fileId));
         if (selectedFile?.id === data.fileId) {
             setSelectedFile(null);
+            setShowPrinterModal(false);
         }
     });
 
@@ -61,86 +63,54 @@ export default function AdminDashboard() {
     if (confirm("Are you sure? This will delete all files and close the session.")) {
       try {
         await fetch(`${API_URL}/end-session`, { method: 'POST' });
-        // Navigation handled by socket event 'session-ended'
       } catch (e) {
         alert("Error ending session");
-        console.error(e);
       }
     }
   };
 
-  const handlePrint = async () => {
-      if (!selectedFile || !sessionId) return;
-      setIsPrinting(true);
-      
-      const fileUrl = getFileUrl(selectedFile);
-
+  const openPrinterSelection = async () => {
+      if (!selectedFile) return;
       try {
-          const response = await fetch(fileUrl);
-          const blob = await response.blob();
-          const blobUrl = URL.createObjectURL(blob);
-          const type = selectedFile.mimetype || blob.type;
-
-          // Create invisible iframe
-          const iframe = document.createElement('iframe');
-          iframe.style.position = 'fixed';
-          iframe.style.right = '0';
-          iframe.style.bottom = '0';
-          iframe.style.width = '0';
-          iframe.style.height = '0';
-          iframe.style.border = '0';
-          iframe.style.visibility = 'hidden'; // Hide it but keep it in DOM
-          
-          document.body.appendChild(iframe);
-
-          if (type.includes('pdf')) {
-              iframe.src = blobUrl;
-              iframe.onload = () => {
-                  setIsPrinting(false);
-                  setTimeout(() => {
-                      iframe.contentWindow.focus();
-                      iframe.contentWindow.print();
-                  }, 500);
-              };
-          } else if (type.includes('image')) {
-               const doc = iframe.contentWindow.document;
-               doc.open();
-               doc.write(`
-                  <html>
-                    <head><style>body{margin:0;display:flex;justify-content:center;align-items:center;height:100vh;} img{max-width:100%;max-height:100%;object-fit:contain;}</style></head>
-                    <body>
-                        <img src="${blobUrl}" onload="setTimeout(() => { window.print(); }, 500);" />
-                    </body>
-                  </html>
-               `);
-               doc.close();
-               setIsPrinting(false);
-          } else {
-               // Fallback / Text
-               const text = await blob.text();
-                const doc = iframe.contentWindow.document;
-               doc.open();
-               doc.write(`<html><body><pre>${text}</pre><script>window.onload = function() { window.print(); }</script></body></html>`);
-               doc.close();
-               setIsPrinting(false);
-          }
-          
-          // Cleanup iframe after a delay
-          setTimeout(() => {
-              if (document.body.contains(iframe)) {
-                document.body.removeChild(iframe);
-              }
-              URL.revokeObjectURL(blobUrl);
-          }, 60000); 
-
-      } catch (err) {
-          console.error("Print error:", err);
-          setIsPrinting(false);
-          alert("Failed to prepare print document.");
+          const res = await fetch(`${API_URL}/printers`);
+          const data = await res.json();
+          setPrinters(data);
+          setShowPrinterModal(true);
+      } catch (e) {
+          console.error(e);
+          alert("Failed to fetch printers.");
       }
   };
 
-  // Helper to format bytes
+  const confirmPrint = async (printerName) => {
+      setIsPrinting(true);
+      try {
+          const response = await fetch(`${API_URL}/print-job`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ 
+                  sessionId, 
+                  fileId: selectedFile.id,
+                  printerName 
+              })
+          });
+          
+          if (response.ok) {
+              alert(`Successfully sent to ${printerName}!`);
+              setShowPrinterModal(false);
+              setSelectedFile(null);
+          } else {
+              const err = await response.json();
+              alert(`Print failed: ${err.message}`);
+          }
+      } catch (error) {
+          console.error(error);
+          alert("Network error.");
+      } finally {
+          setIsPrinting(false);
+      }
+  };
+
   const formatSize = (bytes) => {
       if (bytes === 0) return '0 B';
       const k = 1024;
@@ -240,7 +210,7 @@ export default function AdminDashboard() {
 
       {/* Print Preview Modal */}
       <AnimatePresence>
-        {selectedFile && (
+        {selectedFile && !showPrinterModal && (
           <motion.div 
             initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
             className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 backdrop-blur-sm p-4"
@@ -266,7 +236,6 @@ export default function AdminDashboard() {
               
               {/* Preview Area */}
               <div className="flex-1 bg-zinc-950 relative overflow-hidden flex flex-col items-center justify-center">
-                    {/* Render iframe for preview */}
                     <iframe 
                         src={getFileUrl(selectedFile)} 
                         className="w-full h-full object-contain border-0" 
@@ -284,27 +253,69 @@ export default function AdminDashboard() {
                         Cancel
                     </button>
                     <button 
-                        onClick={handlePrint}
-                        disabled={isPrinting}
-                        className="flex-[2] bg-primary hover:bg-primary-hover text-white font-bold py-4 rounded-xl flex items-center justify-center gap-2 transition shadow-lg shadow-primary/25 disabled:opacity-50 disabled:cursor-not-allowed"
+                        onClick={openPrinterSelection}
+                        className="flex-[2] bg-primary hover:bg-primary-hover text-white font-bold py-4 rounded-xl flex items-center justify-center gap-2 transition shadow-lg shadow-primary/25"
                     >
-                        {isPrinting ? (
-                            <>
-                                <Loader2 className="w-5 h-5 animate-spin" />
-                                Preparing...
-                            </>
-                        ) : (
-                            <>
-                                <Printer className="w-5 h-5" />
-                                Print Now
-                            </>
-                        )}
+                        <Printer className="w-5 h-5" />
+                        Select Printer
                     </button>
                 </div>
               </div>
             </motion.div>
           </motion.div>
         )}
+      </AnimatePresence>
+      
+      {/* Printer Selection Modal */}
+      <AnimatePresence>
+          {showPrinterModal && (
+              <motion.div 
+                initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+                className="fixed inset-0 z-[60] flex items-center justify-center bg-black/90 backdrop-blur-sm p-4"
+              >
+                  <motion.div 
+                      initial={{ scale: 0.9 }} animate={{ scale: 1 }} exit={{ scale: 0.9 }}
+                      className="bg-surface w-full max-w-md rounded-2xl border border-zinc-700 p-6 shadow-2xl"
+                  >
+                      <h3 className="text-xl font-bold text-white mb-4 flex items-center gap-2">
+                          <Printer className="w-6 h-6 text-primary" />
+                          Select Printer
+                      </h3>
+                      <p className="text-zinc-400 mb-6 text-sm">
+                          Select a secure printer. 'Save as PDF' is disabled by default for privacy.
+                      </p>
+                      
+                      <div className="space-y-3 mb-6 max-h-60 overflow-y-auto">
+                          {printers.map((p) => (
+                              <button
+                                  key={p.name}
+                                  onClick={() => confirmPrint(p.name)}
+                                  disabled={isPrinting}
+                                  className="w-full flex items-center justify-between p-4 bg-zinc-800/50 hover:bg-zinc-800 border border-zinc-700/50 hover:border-primary/50 rounded-xl transition text-left group"
+                              >
+                                  <div className="flex items-center gap-3">
+                                      <div className="w-10 h-10 rounded-full bg-zinc-900 flex items-center justify-center">
+                                          <Printer className="w-5 h-5 text-zinc-400 group-hover:text-primary transition-colors" />
+                                      </div>
+                                      <div>
+                                          <div className="font-semibold text-white">{p.name}</div>
+                                          <div className="text-xs text-zinc-500">{p.status}</div>
+                                      </div>
+                                  </div>
+                                  {isPrinting && <Loader2 className="w-5 h-5 animate-spin text-zinc-500" />}
+                              </button>
+                          ))}
+                      </div>
+                      
+                      <button 
+                          onClick={() => setShowPrinterModal(false)}
+                          className="w-full py-3 text-zinc-400 hover:text-white font-medium hover:bg-zinc-800 rounded-lg transition"
+                      >
+                          Cancel
+                      </button>
+                  </motion.div>
+              </motion.div>
+          )}
       </AnimatePresence>
     </div>
   );
