@@ -40,15 +40,32 @@ let fileUploadDir = null;
 // IP Detection
 const getLocalExternalIp = () => {
     const interfaces = os.networkInterfaces();
+    let candidateIp = 'localhost';
+
+    // Prioritize interfaces that look like real hardware (en*, eth*, wl*)
+    // Skip docker*, br-*, veth*
     for (const name of Object.keys(interfaces)) {
+        if (name.startsWith('docker') || name.startsWith('br-') || name.startsWith('veth')) continue;
+
         for (const iface of interfaces[name]) {
-            // Skip internal (localhost) and non-IPv4 addresses
             if (iface.family === 'IPv4' && !iface.internal) {
+                // If we found a likely candidate, return it immediately
+                // Assuming the first non-internal, non-docker IPv4 is the LAN IP
                 return iface.address;
             }
         }
     }
-    return 'localhost'; 
+    
+    // Fallback loop if no "nice" interface name matched (e.g. if names are weird)
+    for (const name of Object.keys(interfaces)) {
+         for (const iface of interfaces[name]) {
+            if (iface.family === 'IPv4' && !iface.internal) {
+                candidateIp = iface.address;
+            }
+        }
+    }
+
+    return candidateIp; 
 };
 
 const SERVER_IP = getLocalExternalIp();

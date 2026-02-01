@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { FileText, X, Printer, Smartphone, LogOut, Clock, Loader2 } from 'lucide-react';
+import { FileText, X, Printer, Smartphone, LogOut, Clock, Loader2, Terminal, ShieldCheck, Trash2 } from 'lucide-react';
 import { socket, API_URL } from '../socket';
 import { useNavigate } from 'react-router-dom';
 
@@ -11,15 +11,27 @@ export default function AdminDashboard() {
   const [printers, setPrinters] = useState([]);
   const [showPrinterModal, setShowPrinterModal] = useState(false);
   const [isPrinting, setIsPrinting] = useState(false);
+  const [systemLogs, setSystemLogs] = useState([]);
+  const logsEndRef = useRef(null);
   const navigate = useNavigate();
 
-  // ... (keep useEffects same as before) ...
+  const addLog = (type, message) => {
+      const timestamp = new Date().toLocaleTimeString('en-US', { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit", fractionalSecondDigits: 3 });
+      setSystemLogs(prev => [...prev.slice(-15), { id: Date.now(), timestamp, type, message }]);
+  };
+
+  useEffect(() => {
+    // Scroll to bottom of logs
+    logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [systemLogs]);
+
   useEffect(() => {
     // Initial check for active session
     socket.on('current-session-status', (data) => {
       if (data.active) {
         setSessionId(data.sessionId);
         setFiles(data.files || []);
+        addLog('INFO', `Reconnected to active session: ${data.sessionId.substring(0, 8)}...`);
       }
     });
 
@@ -27,18 +39,21 @@ export default function AdminDashboard() {
     socket.on('session-started', (data) => {
         setSessionId(data.sessionId);
         setFiles([]);
+        addLog('SECURE', `Session initialized. Container spun up. ID: ${data.sessionId.substring(0, 8)}...`);
     });
 
     socket.on('session-ended', () => {
         setSessionId(null);
         setFiles([]);
-        navigate('/');
+        addLog('WARN', 'Session terminated. Secure container destroyed.');
+        setTimeout(() => navigate('/'), 2000);
     });
 
     // File events
     socket.on('file-uploaded', (data) => {
         if (data.sessionId === sessionId || !sessionId) { 
              setFiles((prev) => [...prev, data.file]);
+             addLog('UPLOAD', `Encrypted packet received: ${data.file.originalname} (${(data.file.size/1024).toFixed(1)}KB)`);
         }
     });
 
@@ -48,6 +63,7 @@ export default function AdminDashboard() {
             setSelectedFile(null);
             setShowPrinterModal(false);
         }
+        addLog('PRIVACY', `File ID ${data.fileId.substring(0, 8)}... wiped from volatile memory.`);
     });
 
     return () => {
@@ -62,6 +78,7 @@ export default function AdminDashboard() {
   const handleEndSession = async () => {
     if (confirm("Are you sure? This will delete all files and close the session.")) {
       try {
+        addLog('CMD', 'Initiating session kill sequence...');
         await fetch(`${API_URL}/end-session`, { method: 'POST' });
       } catch (e) {
         alert("Error ending session");
@@ -72,18 +89,22 @@ export default function AdminDashboard() {
   const openPrinterSelection = async () => {
       if (!selectedFile) return;
       try {
+          addLog('SYS', 'Scanning local hardware peripherals...');
           const res = await fetch(`${API_URL}/printers`);
           const data = await res.json();
           setPrinters(data);
           setShowPrinterModal(true);
+          addLog('SYS', `Scan complete. Found ${data.length} output devices.`);
       } catch (e) {
           console.error(e);
+          addLog('ERR', 'Peripheral scan failed.');
           alert("Failed to fetch printers.");
       }
   };
 
   const confirmPrint = async (printerName) => {
       setIsPrinting(true);
+      addLog('PRINT', `Spooling job to ${printerName}...`);
       try {
           const response = await fetch(`${API_URL}/print-job`, {
               method: 'POST',
@@ -96,15 +117,18 @@ export default function AdminDashboard() {
           });
           
           if (response.ok) {
+              addLog('SUCCESS', `Job sent to spooler. Initiating auto-delete protocol.`);
               alert(`Successfully sent to ${printerName}!`);
               setShowPrinterModal(false);
               setSelectedFile(null);
           } else {
               const err = await response.json();
+              addLog('ERR', `Print job rejected: ${err.message}`);
               alert(`Print failed: ${err.message}`);
           }
       } catch (error) {
           console.error(error);
+          addLog('ERR', 'Network handshake failed.');
           alert("Network error.");
       } finally {
           setIsPrinting(false);
@@ -125,19 +149,22 @@ export default function AdminDashboard() {
   };
 
   return (
-    <div className="min-h-screen p-6 md:p-10 pb-24 relative bg-background text-white">
+    <div className="min-h-screen p-6 md:p-10 pb-64 relative bg-background text-white font-sans">
       
       {/* Header */}
       <header className="flex justify-between items-center mb-10 border-b border-zinc-800 pb-6">
         <div>
-          <h2 className="text-3xl font-bold tracking-tight">Dashboard</h2>
+          <h2 className="text-3xl font-bold tracking-tight flex items-center gap-3">
+             <ShieldCheck className="w-8 h-8 text-primary" />
+             Secure Dashboard
+          </h2>
           {sessionId ? (
-             <div className="flex items-center gap-2 text-green-400 mt-1 text-sm font-medium">
+             <div className="flex items-center gap-2 text-green-400 mt-1 text-sm font-medium font-mono">
                 <span className="relative flex h-2 w-2">
                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
                 <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
                 </span>
-                Session Active
+                ENCRYPTED_SESSION_ACTIVE :: {sessionId.substring(0,8)}
             </div>
           ) : (
             <div className="text-zinc-500 mt-1 text-sm">No active session</div>
@@ -145,26 +172,35 @@ export default function AdminDashboard() {
         </div>
         
         {sessionId && (
-            <button 
-            onClick={() => window.open(`/qr?sessionId=${sessionId}`, '_blank')} 
-            className="flex items-center gap-2 text-sm font-medium bg-zinc-800 hover:bg-zinc-700 text-zinc-200 px-5 py-2.5 rounded-lg border border-zinc-700 transition-all"
-            >
-            <Smartphone className="w-4 h-4" />
-            View QR
-            </button>
+            <div className="flex gap-3">
+                <button 
+                onClick={() => window.open(`/qr?sessionId=${sessionId}`, '_blank')} 
+                className="flex items-center gap-2 text-sm font-medium bg-zinc-800 hover:bg-zinc-700 text-zinc-200 px-5 py-2.5 rounded-lg border border-zinc-700 transition-all"
+                >
+                <Smartphone className="w-4 h-4" />
+                View QR
+                </button>
+                <button 
+                    onClick={handleEndSession}
+                    className="flex items-center gap-2 bg-red-500/10 hover:bg-red-500/20 text-red-500 border border-red-500/20 px-5 py-2.5 rounded-lg font-bold shadow-2xl backdrop-blur-md transition-all hover:scale-105"
+                >
+                    <LogOut className="w-4 h-4" />
+                    Kill Session
+                </button>
+            </div>
         )}
       </header>
 
       {/* Empty State */}
       {files.length === 0 && (
-        <div className="flex flex-col items-center justify-center h-[50vh] border-2 border-dashed border-zinc-800 rounded-3xl text-zinc-600">
+        <div className="flex flex-col items-center justify-center h-[40vh] border-2 border-dashed border-zinc-800 rounded-3xl text-zinc-600">
             <Clock className="w-12 h-12 mb-4 opacity-20" />
-            <p className="text-lg">Waiting for user uploads...</p>
+            <p className="text-lg">Awaiting secure transmission...</p>
         </div>
       )}
 
       {/* File List Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-20">
         <AnimatePresence mode="popLayout">
           {files.map((file) => (
             <motion.div
@@ -172,7 +208,12 @@ export default function AdminDashboard() {
               layout
               initial={{ opacity: 0, scale: 0.9, y: 20 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.9 }}
+              exit={{ 
+                  opacity: 0, 
+                  scale: 0.5, 
+                  filter: "blur(10px)",
+                  transition: { duration: 0.3 }
+              }}
               whileHover={{ scale: 1.02 }}
               onClick={() => setSelectedFile(file)}
               className="bg-surface/50 border border-zinc-700/50 backdrop-blur cursor-pointer p-5 rounded-2xl hover:border-primary/50 hover:bg-zinc-800/80 transition-all shadow-lg group relative overflow-hidden"
@@ -195,18 +236,34 @@ export default function AdminDashboard() {
         </AnimatePresence>
       </div>
 
-      {/* Floating End Session Button (Bottom Right) */}
-      {sessionId && (
-        <div className="fixed bottom-8 right-8 z-40">
-            <button 
-                onClick={handleEndSession}
-                className="flex items-center gap-3 bg-red-500/10 hover:bg-red-500/20 text-red-500 border border-red-500/20 px-8 py-4 rounded-full font-bold shadow-2xl backdrop-blur-md transition-all hover:scale-105 hover:shadow-red-900/20"
-            >
-                <LogOut className="w-5 h-5" />
-                End Session
-            </button>
-        </div>
-      )}
+      {/* Live Security Terminal */}
+      <div className="fixed bottom-0 left-0 right-0 h-48 bg-black/95 border-t border-primary/30 font-mono text-xs md:text-sm p-4 overflow-hidden z-40 shadow-[0_-10px_40px_rgba(0,0,0,0.5)]">
+          <div className="flex items-center gap-2 text-primary/80 mb-2 border-b border-zinc-800 pb-2">
+              <Terminal className="w-4 h-4" />
+              <span className="font-bold tracking-widest">SYSTEM_LOGS // SECURE_CHANNEL</span>
+              <div className="ml-auto flex gap-2">
+                  <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
+                  <span className="text-green-500">LIVE</span>
+              </div>
+          </div>
+          <div className="h-full overflow-y-auto pb-8 space-y-1 text-zinc-300">
+              {systemLogs.length === 0 && <span className="text-zinc-600 italic">Initializing system diagnostics...</span>}
+              {systemLogs.map((log) => (
+                  <div key={log.id} className="flex gap-3 font-mono opacity-90 hover:opacity-100 transition-opacity">
+                      <span className="text-zinc-500">[{log.timestamp}]</span>
+                      <span className={`font-bold ${
+                          log.type === 'ERR' ? 'text-red-500' : 
+                          log.type === 'SECURE' ? 'text-blue-400' : 
+                          log.type === 'PRIVACY' ? 'text-purple-400' : 
+                          log.type === 'UPLOAD' ? 'text-yellow-400' : 
+                          'text-primary'
+                      }`}>[{log.type}]</span>
+                      <span>{log.message}</span>
+                  </div>
+              ))}
+              <div ref={logsEndRef} />
+          </div>
+      </div>
 
       {/* Print Preview Modal */}
       <AnimatePresence>
