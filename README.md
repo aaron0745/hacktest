@@ -1,6 +1,6 @@
-# Safe-Print 🖨️
+# QueuePrint 🖨️
 
-Safe-Print is a real-time, session-based secure printing queue system designed for print shops and shared environments. It simplifies the document submission process by allowing users to scan a dynamic QR code and upload files directly from their mobile devices without needing to transfer files via USB or email.
+QueuePrint is a real-time, session-based secure printing queue system designed for print shops and shared environments. It simplifies the document submission process by allowing users to scan a dynamic QR code and upload files directly from their mobile devices without needing to transfer files via USB or email.
 
 ## 🚀 Features
 
@@ -118,8 +118,3 @@ Safe-Print is a real-time, session-based secure printing queue system designed f
 - **Volatility:** Files are automatically deleted after 2 minutes or when the session ends.
 - **Containerization:** CUPS services are isolated within Docker to prevent host system exposure.
 
----
-
-## 📄 License
-
-This project is licensed under the ISC License.
