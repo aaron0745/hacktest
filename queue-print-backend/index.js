@@ -351,8 +351,11 @@ app.post('/end-session', async (req, res) => {
     }
 });
 
+// Socket.IO connection handling
 io.on('connection', (socket) => {
     console.log('User connected:', socket.id);
+
+    // Send status on connection
     if (activeSessionId) {
         socket.emit('current-session-status', {
             active: true,
@@ -360,6 +363,17 @@ io.on('connection', (socket) => {
             files: sessionFiles[activeSessionId] || []
         });
     }
+
+    // Allow clients to ask for status (fixes reload/navigation race conditions)
+    socket.on('check-session-status', () => {
+        if (activeSessionId) {
+            socket.emit('current-session-status', {
+                active: true,
+                sessionId: activeSessionId,
+                files: sessionFiles[activeSessionId] || []
+            });
+        }
+    });
 });
 
 server.listen(port, '0.0.0.0', () => {

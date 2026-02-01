@@ -26,7 +26,34 @@ export default function AdminDashboard() {
   }, [systemLogs]);
 
   useEffect(() => {
-    // Initial check for active session
+    const fetchSessionStatus = async () => {
+        try {
+            // Poll for session status immediately on mount to fix reload issue
+            // We use the socket for live updates, but this handles the initial load robustly
+            // Actually, socket 'current-session-status' is emitted on connection. 
+            // If connection happened before this component mounted, we missed it.
+            // So we ask the server explicitly.
+            
+            // Or simpler: We can emit a 'request-status' event?
+            // Let's just rely on the fact that if we just navigated here, the session IS active.
+            // But let's be safe and check.
+            // Since there isn't a REST endpoint for "check status" explicitly returning the ID in the same format easily without auth,
+            // let's just listen.
+            
+            // BETTER FIX: The issue is likely latency. 
+            // When Home.jsx calls /start-session, it navigates immediately.
+            // The socket event 'session-started' might fire *while* navigation is happening or before the new component mounts.
+            
+            // To fix: Ask the socket for status on mount.
+            socket.emit('check-session-status'); 
+        } catch (e) {
+            console.error(e);
+        }
+    };
+
+    fetchSessionStatus();
+
+    // Initial check for active session (server sends this on connection, but we might miss it)
     socket.on('current-session-status', (data) => {
       if (data.active) {
         setSessionId(data.sessionId);
